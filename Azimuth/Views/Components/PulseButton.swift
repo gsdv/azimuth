@@ -67,7 +67,7 @@ struct PulseButton: View {
         ZStack {
             rings(outward: true, strokeOpacity: 0.35)
                 .opacity(isActive ? 1 : 0)
-            rings(outward: false, strokeOpacity: 0.22)
+            rings(outward: false, strokeOpacity: 0.32)
                 .opacity(isActive ? 0 : 1)
         }
         .animation(.easeInOut(duration: 0.45), value: isActive)
@@ -84,7 +84,7 @@ struct PulseButton: View {
                     let scale = outward
                         ? 1.0 + eased * 0.45
                         : 1.45 - eased * 0.45
-                    let opacity = (1.0 - eased) * 0.9
+                    let opacity = ringOpacity(phase: phase, outward: outward)
 
                     Circle()
                         .stroke(Theme.sky.opacity(strokeOpacity), lineWidth: 1.5)
@@ -93,6 +93,27 @@ struct PulseButton: View {
                         .opacity(opacity)
                 }
             }
+        }
+    }
+
+    private func ringOpacity(phase: Double, outward: Bool) -> Double {
+        let maxOpacity = 0.9
+        if outward {
+            let introEnd = 0.08
+            if phase < introEnd {
+                return (phase / introEnd) * maxOpacity
+            }
+            let t = (phase - introEnd) / (1 - introEnd)
+            let eased = 1 - pow(1 - t, 2)
+            return (1 - eased) * maxOpacity
+        } else {
+            let peakAt = 0.85
+            if phase < peakAt {
+                let t = phase / peakAt
+                return t * t * maxOpacity
+            }
+            let t = (phase - peakAt) / (1 - peakAt)
+            return (1 - t) * maxOpacity
         }
     }
 
