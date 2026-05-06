@@ -13,14 +13,23 @@ struct ContentView: View {
         @Bindable var router = router
 
         TabView(selection: $router.selection) {
-            Tab("Track", systemImage: "location.north.line.fill", value: AppTab.track) {
+            Tab(value: AppTab.track) {
                 HomeView()
+            } label: {
+                Label("Track", systemImage: "location.north.fill")
+                    .labelStyle(.iconOnly)
             }
-            Tab("Recent", systemImage: "list.bullet.rectangle.fill", value: AppTab.recent) {
+            Tab(value: AppTab.recent) {
                 RecentSendsView()
+            } label: {
+                Label("Recent", systemImage: "list.bullet.rectangle.fill")
+                    .labelStyle(.iconOnly)
             }
-            Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
+            Tab(value: AppTab.settings) {
                 SettingsView()
+            } label: {
+                Label("Settings", systemImage: "gearshape.fill")
+                    .labelStyle(.iconOnly)
             }
         }
         .tint(Theme.skyDeep)
