@@ -22,7 +22,9 @@ struct StatusCard: View {
                 Text(headlineText)
                     .font(.system(.headline, design: .rounded).weight(.semibold))
                     .foregroundStyle(.primary)
-                Spacer()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
             }
 
             HStack(spacing: 16) {

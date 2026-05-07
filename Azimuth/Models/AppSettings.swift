@@ -5,50 +5,24 @@ import Observation
 @MainActor
 final class AppSettings {
     private enum Keys {
-        static let endpointURL = "azimuth.endpointURL"
-        static let schedule = "azimuth.schedule"
+        static let endpoints = "azimuth.endpoints"
         static let trackingEnabled = "azimuth.trackingEnabled"
-        static let lastSentDate = "azimuth.lastSentDate"
-        static let includeBattery = "azimuth.includeBattery"
-        static let includeSpeed = "azimuth.includeSpeed"
         static let deviceId = "azimuth.deviceId"
         static let history = "azimuth.history"
     }
 
     private let defaults: UserDefaults
 
-    var endpointURL: String {
-        didSet { defaults.set(endpointURL, forKey: Keys.endpointURL) }
-    }
-
-    var schedule: SendSchedule {
+    var endpoints: [Endpoint] {
         didSet {
-            if let data = try? JSONEncoder().encode(schedule) {
-                defaults.set(data, forKey: Keys.schedule)
+            if let data = try? JSONEncoder().encode(endpoints) {
+                defaults.set(data, forKey: Keys.endpoints)
             }
         }
     }
 
     var trackingEnabled: Bool {
         didSet { defaults.set(trackingEnabled, forKey: Keys.trackingEnabled) }
-    }
-
-    var lastSentDate: Date? {
-        didSet {
-            if let lastSentDate {
-                defaults.set(lastSentDate, forKey: Keys.lastSentDate)
-            } else {
-                defaults.removeObject(forKey: Keys.lastSentDate)
-            }
-        }
-    }
-
-    var includeBattery: Bool {
-        didSet { defaults.set(includeBattery, forKey: Keys.includeBattery) }
-    }
-
-    var includeSpeed: Bool {
-        didSet { defaults.set(includeSpeed, forKey: Keys.includeSpeed) }
     }
 
     var deviceId: String {
@@ -64,32 +38,30 @@ final class AppSettings {
         }
     }
 
-    var bearerToken: String {
-        get { KeychainStore.shared.bearerToken ?? "" }
-        set { KeychainStore.shared.bearerToken = newValue.isEmpty ? nil : newValue }
+    var hasAnyValidEndpoint: Bool {
+        endpoints.contains { $0.hasValidURL }
     }
 
-    var hasValidEndpoint: Bool {
-        guard let url = URL(string: endpointURL),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              url.host?.isEmpty == false else { return false }
-        return true
+    var hasAnyActiveValidEndpoint: Bool {
+        endpoints.contains { $0.isActive && $0.hasValidURL }
+    }
+
+    var earliestNextSendDate: Date? {
+        let dates = endpoints
+            .filter { $0.isActive && $0.hasValidURL }
+            .map { $0.nextSendDate() }
+        return dates.min()
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        self.endpointURL = defaults.string(forKey: Keys.endpointURL) ?? ""
-        if let data = defaults.data(forKey: Keys.schedule),
-           let value = try? JSONDecoder().decode(SendSchedule.self, from: data) {
-            self.schedule = value
+        if let data = defaults.data(forKey: Keys.endpoints),
+           let decoded = try? JSONDecoder().decode([Endpoint].self, from: data) {
+            self.endpoints = decoded
         } else {
-            self.schedule = .hourly
+            self.endpoints = []
         }
         self.trackingEnabled = defaults.bool(forKey: Keys.trackingEnabled)
-        self.lastSentDate = defaults.object(forKey: Keys.lastSentDate) as? Date
-        self.includeBattery = defaults.object(forKey: Keys.includeBattery) as? Bool ?? true
-        self.includeSpeed = defaults.object(forKey: Keys.includeSpeed) as? Bool ?? true
         if let existing = defaults.string(forKey: Keys.deviceId), !existing.isEmpty {
             self.deviceId = existing
         } else {
@@ -105,10 +77,38 @@ final class AppSettings {
         }
     }
 
+    func addEndpoint(_ endpoint: Endpoint) {
+        endpoints.append(endpoint)
+    }
+
+    func updateEndpoint(_ endpoint: Endpoint) {
+        guard let index = endpoints.firstIndex(where: { $0.id == endpoint.id }) else { return }
+        endpoints[index] = endpoint
+    }
+
+    func deleteEndpoint(id: UUID) {
+        endpoints.removeAll { $0.id == id }
+        KeychainStore.shared.deleteBearerToken(for: id)
+    }
+
+    func endpoint(id: UUID) -> Endpoint? {
+        endpoints.first { $0.id == id }
+    }
+
+    func bearerToken(for endpointID: UUID) -> String {
+        KeychainStore.shared.bearerToken(for: endpointID) ?? ""
+    }
+
+    func setBearerToken(_ token: String, for endpointID: UUID) {
+        KeychainStore.shared.setBearerToken(token, for: endpointID)
+    }
+
     func recordSend(_ record: SendRecord) {
         history.insert(record, at: 0)
         if record.success {
-            lastSentDate = record.date
+            if let index = endpoints.firstIndex(where: { $0.id == record.endpointID }) {
+                endpoints[index].lastSentDate = record.date
+            }
         }
     }
 }

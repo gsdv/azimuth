@@ -30,25 +30,24 @@ struct PulseButton: View {
                     )
                     .scaleEffect(press ? 0.95 : 1.0)
                     .saturation(isActive ? 1.0 : 0.55)
+                    .animation(.smooth(duration: 0.45), value: isActive)
+                    .animation(.smooth(duration: 0.45), value: isSending)
 
                 VStack(spacing: 6) {
-                    if isSending {
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 38, weight: .semibold))
-                            .symbolEffect(.pulse, options: .repeating)
-                            .foregroundStyle(.white)
-                    } else {
-                        Image(systemName: isActive ? "location.fill" : "location.slash")
-                            .font(.system(size: 38, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .contentTransition(.symbolEffect(.replace))
-                    }
+                    Image(systemName: iconName)
+                        .font(.system(size: 38, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .contentTransition(.symbolEffect(.replace))
+                        .symbolEffect(.wiggle, options: .repeating, isActive: isSending)
                     Text(buttonLabel)
                         .font(.system(.subheadline, design: .rounded).weight(.semibold))
                         .tracking(2)
                         .textCase(.uppercase)
                         .foregroundStyle(.white.opacity(0.92))
+                        .contentTransition(.opacity)
                 }
+                .animation(.smooth(duration: 0.4), value: iconName)
+                .animation(.smooth(duration: 0.4), value: buttonLabel)
             }
             .frame(width: 260, height: 260)
             .contentShape(Circle())
@@ -115,6 +114,10 @@ struct PulseButton: View {
             let t = (phase - peakAt) / (1 - peakAt)
             return (1 - t) * maxOpacity
         }
+    }
+
+    private var iconName: String {
+        isActive ? "location.fill" : "location.slash.fill"
     }
 
     private var buttonLabel: String {

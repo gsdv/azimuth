@@ -18,4 +18,8 @@ struct SendRecord: Identifiable, Codable, Equatable {
     var success: Bool
     var statusCode: Int?
     var message: String?
+    var endpointID: UUID
+    var endpointName: String
+    var bodyJSON: String?
+    var bodyTruncated: Bool = false
 }

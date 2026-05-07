@@ -3,6 +3,7 @@ import Foundation
 actor PendingQueue {
     struct Item: Codable, Identifiable, Equatable {
         let id: UUID
+        let endpointID: UUID
         let capturedAt: Date
         let body: Data
     }
@@ -23,8 +24,8 @@ actor PendingQueue {
         }
     }
 
-    func enqueue(body: Data, capturedAt: Date) {
-        items.append(Item(id: UUID(), capturedAt: capturedAt, body: body))
+    func enqueue(endpointID: UUID, body: Data, capturedAt: Date) {
+        items.append(Item(id: UUID(), endpointID: endpointID, capturedAt: capturedAt, body: body))
         if items.count > maxItems {
             items.removeFirst(items.count - maxItems)
         }
@@ -35,8 +36,17 @@ actor PendingQueue {
         items
     }
 
+    func snapshot(forEndpoint endpointID: UUID) -> [Item] {
+        items.filter { $0.endpointID == endpointID }
+    }
+
     func remove(id: UUID) {
         items.removeAll { $0.id == id }
+        persist()
+    }
+
+    func removeAll(forEndpoint endpointID: UUID) {
+        items.removeAll { $0.endpointID == endpointID }
         persist()
     }
 
@@ -47,6 +57,10 @@ actor PendingQueue {
 
     func count() -> Int {
         items.count
+    }
+
+    func count(forEndpoint endpointID: UUID) -> Int {
+        items.filter { $0.endpointID == endpointID }.count
     }
 
     private func persist() {

@@ -3,9 +3,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AzimuthEngine.self) private var engine
 
-    @State private var endpointDraft: String = ""
-    @State private var tokenDraft: String = ""
-    @State private var revealToken: Bool = false
+    @State private var editingEndpoint: Endpoint?
+    @State private var creatingEndpoint: Endpoint?
     @State private var showCopiedToast: Bool = false
 
     var body: some View {
@@ -16,9 +15,7 @@ struct SettingsView: View {
                 CanvasBackground()
                 ScrollView {
                     VStack(spacing: 18) {
-                        endpointSection(settings: settings)
-                        scheduleSection(settings: settings)
-                        payloadSection(settings: settings)
+                        endpointsSection(settings: settings)
                         permissionsSection
                         backgroundSection
                         deviceSection(settings: settings)
@@ -28,10 +25,6 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
-            .onAppear {
-                endpointDraft = settings.endpointURL
-                tokenDraft = settings.bearerToken
-            }
             .overlay(alignment: .top) {
                 if showCopiedToast {
                     Text("Copied")
@@ -42,120 +35,126 @@ struct SettingsView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            .sheet(item: $editingEndpoint) { ep in
+                EndpointEditor(
+                    initial: ep,
+                    isNew: false,
+                    onSave: { updated, token in
+                        engine.settings.updateEndpoint(updated)
+                        engine.settings.setBearerToken(token, for: updated.id)
+                        engine.scheduleNextRefresh()
+                    },
+                    onDelete: {
+                        engine.settings.deleteEndpoint(id: ep.id)
+                    }
+                )
+            }
+            .sheet(item: $creatingEndpoint) { ep in
+                EndpointEditor(
+                    initial: ep,
+                    isNew: true,
+                    onSave: { new, token in
+                        engine.settings.addEndpoint(new)
+                        engine.settings.setBearerToken(token, for: new.id)
+                        engine.scheduleNextRefresh()
+                    },
+                    onDelete: nil
+                )
+            }
         }
     }
 
-    private func endpointSection(settings: AppSettings) -> some View {
-        Card(title: "Endpoint", icon: "link") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("URL")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                ZStack(alignment: .leading) {
-                    if endpointDraft.isEmpty {
-                        Text(verbatim: "https://example.com/api/location")
+    private func endpointsSection(settings: AppSettings) -> some View {
+        Card(title: "Endpoints", icon: "link") {
+            VStack(spacing: 0) {
+                if settings.endpoints.isEmpty {
+                    VStack(spacing: 8) {
+                        Text("No endpoints yet")
+                            .font(.subheadline.weight(.medium))
+                        Text("Add a destination to start sending your location.")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
-                    TextField("", text: $endpointDraft)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .foregroundStyle(.primary)
-                        .onChange(of: endpointDraft) { _, new in
-                            settings.endpointURL = new.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                } else {
+                    ForEach(Array(settings.endpoints.enumerated()), id: \.element.id) { idx, ep in
+                        Button {
+                            editingEndpoint = ep
+                        } label: {
+                            endpointRow(ep)
                         }
-                }
-                .padding(12)
-                .background(inputFieldBackground)
-
-                if !endpointDraft.isEmpty && !settings.hasValidEndpoint {
-                    Label("That URL doesn't look right.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(Theme.danger)
+                        .buttonStyle(.plain)
+                        if idx < settings.endpoints.count - 1 {
+                            Divider().opacity(0.4)
+                        }
+                    }
                 }
 
                 Divider().opacity(0.4)
-
-                Text("Bearer token (optional)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                HStack {
-                    ZStack(alignment: .leading) {
-                        if tokenDraft.isEmpty {
-                            Text(verbatim: "Paste token")
-                                .foregroundStyle(.secondary)
-                        }
-                        Group {
-                            if revealToken {
-                                TextField("", text: $tokenDraft)
-                            } else {
-                                SecureField("", text: $tokenDraft)
-                            }
-                        }
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .foregroundStyle(.primary)
-                        .onChange(of: tokenDraft) { _, new in
-                            settings.bearerToken = new
-                        }
+                Button {
+                    creatingEndpoint = Endpoint()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Theme.skyDeep)
+                        Text("Add endpoint")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Theme.skyDeep)
+                        Spacer()
                     }
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
 
-                    Button {
-                        revealToken.toggle()
-                    } label: {
-                        Image(systemName: revealToken ? "eye.slash" : "eye")
+    private func endpointRow(_ ep: Endpoint) -> some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(ep.isActive ? Theme.success : Color.secondary.opacity(0.5))
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(ep.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    if !ep.isActive {
+                        Text("Paused")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(Color.secondary.opacity(0.18)))
                             .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
                 }
-                .padding(12)
-                .background(inputFieldBackground)
-
-                Text("Sent as `Authorization: Bearer …`. Stored in the iOS Keychain.")
-                    .font(.caption2)
+                Text(rowDetail(ep))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
         }
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
     }
 
-    private func scheduleSection(settings: AppSettings) -> some View {
-        Card(title: "Schedule", icon: "clock") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Send my location \(settings.schedule.summary)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.opacity)
-                    .id(settings.schedule.summary)
-                SchedulePicker(schedule: Binding(
-                    get: { settings.schedule },
-                    set: { settings.schedule = $0 }
-                ))
-                Text("iOS may delay background sends slightly to save battery.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+    private func rowDetail(_ ep: Endpoint) -> String {
+        let urlBit: String
+        if let host = URL(string: ep.url)?.host, !host.isEmpty {
+            urlBit = host
+        } else if !ep.url.isEmpty {
+            urlBit = ep.url
+        } else {
+            urlBit = "No URL"
         }
-    }
-
-    private func payloadSection(settings: AppSettings) -> some View {
-        Card(title: "Payload", icon: "doc.text") {
-            VStack(spacing: 4) {
-                Toggle("Include speed", isOn: Binding(
-                    get: { settings.includeSpeed },
-                    set: { settings.includeSpeed = $0 }
-                ))
-                Toggle("Include battery level", isOn: Binding(
-                    get: { settings.includeBattery },
-                    set: { settings.includeBattery = $0 }
-                ))
-                Text("Payload format is GeoJSON Feature, with a `locations` array and a `current` object.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 6)
-            }
-            .tint(Theme.skyDeep)
-        }
+        return "\(urlBit) · \(ep.schedule.summary)"
     }
 
     private var permissionsSection: some View {
@@ -206,33 +205,9 @@ struct SettingsView: View {
         Card(title: "How sending works", icon: "info.circle") {
             VStack(alignment: .leading, spacing: 10) {
                 bullet("Azimuth runs a low-power location service so iOS can wake the app and post on schedule, even with the screen locked.")
-                bullet("Each send fires on the next location update once your interval has elapsed.")
+                bullet("Each endpoint has its own schedule. When iOS wakes the app, every endpoint that's due fires on the same wake.")
                 bullet("If a send fails because you're offline, it's saved and retried automatically when the network returns.")
                 bullet("If you force-quit Azimuth by swiping it out of the App Switcher, the location service shuts down and scheduled sends pause. They resume automatically once iOS detects roughly 500 metres of movement or a cell-tower / Wi-Fi change — at that point iOS silently relaunches Azimuth in the background and sending continues. You don't need to reopen the app.")
-                if engine.pendingCount > 0 {
-                    HStack(spacing: 8) {
-                        Image(systemName: "tray.full")
-                            .foregroundStyle(Theme.warning)
-                        Text("\(engine.pendingCount) send\(engine.pendingCount == 1 ? "" : "s") queued offline")
-                            .font(.footnote.weight(.medium))
-                        Spacer()
-                        Button("Retry now") {
-                            engine.flushPending()
-                        }
-                        .font(.footnote.weight(.semibold))
-                        .tint(Theme.skyDeep)
-                    }
-                    .padding(10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Theme.chipFill)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .stroke(Theme.cardStroke, lineWidth: 0.5)
-                            )
-                    )
-                    .padding(.top, 4)
-                }
             }
         }
     }
@@ -248,15 +223,6 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    private var inputFieldBackground: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(uiColor: .systemBackground))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color(uiColor: .separator).opacity(0.6), lineWidth: 0.7)
-            )
     }
 
     private func deviceSection(settings: AppSettings) -> some View {
@@ -340,5 +306,235 @@ private struct Card<Content: View>: View {
                 )
                 .shadow(color: Theme.skyDeep.opacity(0.08), radius: 14, x: 0, y: 6)
         )
+    }
+}
+
+private struct EndpointEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AzimuthEngine.self) private var engine
+
+    let isNew: Bool
+    let onSave: (Endpoint, String) -> Void
+    let onDelete: (() -> Void)?
+
+    @State private var draft: Endpoint
+    @State private var nameDraft: String
+    @State private var urlDraft: String
+    @State private var tokenDraft: String
+    @State private var revealToken: Bool = false
+    @State private var confirmDelete: Bool = false
+
+    init(initial: Endpoint, isNew: Bool, onSave: @escaping (Endpoint, String) -> Void, onDelete: (() -> Void)?) {
+        self.isNew = isNew
+        self.onSave = onSave
+        self.onDelete = onDelete
+        _draft = State(initialValue: initial)
+        _nameDraft = State(initialValue: initial.name)
+        _urlDraft = State(initialValue: initial.url)
+        _tokenDraft = State(initialValue: KeychainStore.shared.bearerToken(for: initial.id) ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                CanvasBackground()
+                ScrollView {
+                    VStack(spacing: 18) {
+                        nameAndURLCard
+                        tokenCard
+                        scheduleCard
+                        payloadCard
+                        if !isNew { activeCard }
+                        if !isNew, onDelete != nil { deleteCard }
+                    }
+                    .padding(20)
+                }
+            }
+            .navigationTitle(isNew ? "New endpoint" : "Edit endpoint")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") { save() }
+                        .fontWeight(.semibold)
+                        .disabled(!canSave)
+                }
+            }
+        }
+    }
+
+    private var canSave: Bool {
+        guard let parsed = URL(string: urlDraft.trimmingCharacters(in: .whitespaces)),
+              let scheme = parsed.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              parsed.host?.isEmpty == false else { return false }
+        return true
+    }
+
+    private func save() {
+        var updated = draft
+        updated.name = nameDraft.trimmingCharacters(in: .whitespaces)
+        updated.url = urlDraft.trimmingCharacters(in: .whitespaces)
+        onSave(updated, tokenDraft)
+        dismiss()
+    }
+
+    private var nameAndURLCard: some View {
+        Card(title: "Endpoint", icon: "link") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Name")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField("Personal", text: $nameDraft)
+                    .textInputAutocapitalization(.words)
+                    .padding(12)
+                    .background(inputFieldBackground)
+
+                Divider().opacity(0.4)
+
+                Text("URL")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ZStack(alignment: .leading) {
+                    if urlDraft.isEmpty {
+                        Text(verbatim: "https://example.com/api/location")
+                            .foregroundStyle(.secondary)
+                    }
+                    TextField("", text: $urlDraft)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .foregroundStyle(.primary)
+                }
+                .padding(12)
+                .background(inputFieldBackground)
+
+                if !urlDraft.isEmpty && !canSave {
+                    Label("That URL doesn't look right.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Theme.danger)
+                }
+            }
+        }
+    }
+
+    private var tokenCard: some View {
+        Card(title: "Authentication", icon: "key") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Bearer token (optional)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                HStack {
+                    ZStack(alignment: .leading) {
+                        if tokenDraft.isEmpty {
+                            Text(verbatim: "Paste token")
+                                .foregroundStyle(.secondary)
+                        }
+                        Group {
+                            if revealToken {
+                                TextField("", text: $tokenDraft)
+                            } else {
+                                SecureField("", text: $tokenDraft)
+                            }
+                        }
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .foregroundStyle(.primary)
+                    }
+                    Button {
+                        revealToken.toggle()
+                    } label: {
+                        Image(systemName: revealToken ? "eye.slash" : "eye")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(12)
+                .background(inputFieldBackground)
+
+                Text("Sent as `Authorization: Bearer …`. Stored in the iOS Keychain.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var scheduleCard: some View {
+        Card(title: "Schedule", icon: "clock") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Send my location \(draft.schedule.summary)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.opacity)
+                    .id(draft.schedule.summary)
+                SchedulePicker(schedule: $draft.schedule)
+                Text("iOS may delay background sends slightly to save battery.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var payloadCard: some View {
+        Card(title: "Payload", icon: "doc.text") {
+            VStack(spacing: 4) {
+                Toggle("Include speed", isOn: $draft.includeSpeed)
+                Toggle("Include battery level", isOn: $draft.includeBattery)
+                Text("Payload format is GeoJSON Feature, with a `locations` array and a `current` object.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 6)
+            }
+            .tint(Theme.skyDeep)
+        }
+    }
+
+    private var activeCard: some View {
+        Card(title: "Status", icon: "power") {
+            Toggle("Active", isOn: $draft.isActive)
+                .tint(Theme.skyDeep)
+        }
+    }
+
+    private var deleteCard: some View {
+        Button(role: .destructive) {
+            confirmDelete = true
+        } label: {
+            Text("Delete endpoint")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .foregroundStyle(Theme.danger)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.clear)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(Theme.danger.opacity(0.5), lineWidth: 1)
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .alert("Delete endpoint?", isPresented: $confirmDelete) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                onDelete?()
+                dismiss()
+            }
+        } message: {
+            Text("This removes \(draft.displayName) and its bearer token. Recent send history is preserved.")
+        }
+    }
+
+    private var inputFieldBackground: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color(uiColor: .systemBackground))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color(uiColor: .separator).opacity(0.6), lineWidth: 0.7)
+            )
     }
 }

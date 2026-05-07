@@ -3,13 +3,15 @@ import BackgroundTasks
 
 @main
 struct AzimuthApp: App {
-    @State private var engine = AzimuthEngine.shared
+    @State private var engine: AzimuthEngine
     @State private var router = TabRouter()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        _ = AzimuthEngine.shared
-        NotificationService.shared.installDelegate()
+        // Register the BG task handler BEFORE any code path can reach
+        // BGTaskScheduler.submit(). AzimuthEngine.init() calls
+        // scheduleNextRefresh() when trackingEnabled is true, so the engine
+        // singleton must be created strictly after this register() call.
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: AzimuthEngine.refreshTaskID,
             using: nil
@@ -22,6 +24,9 @@ struct AzimuthApp: App {
                 await AzimuthEngine.shared.handleBackgroundRefresh(refreshTask)
             }
         }
+
+        NotificationService.shared.installDelegate()
+        _engine = State(initialValue: AzimuthEngine.shared)
     }
 
     var body: some Scene {

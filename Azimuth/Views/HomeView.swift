@@ -25,30 +25,38 @@ struct HomeView: View {
 
                 PulseButton(
                     isActive: engine.isTracking,
-                    isSending: engine.status.isSending,
+                    isSending: engine.isAnySending,
                     action: handleMainTap
                 )
+                .opacity(settings.endpoints.isEmpty ? 0.5 : 1.0)
+                .allowsHitTesting(!settings.endpoints.isEmpty)
 
                 Spacer(minLength: 16)
 
-                VStack(spacing: 14) {
-                    StatusCard(
-                        status: engine.status,
-                        lastSent: settings.lastSentDate,
-                        nextSend: engine.nextSendDate,
-                        isTracking: engine.isTracking
-                    )
+                if settings.endpoints.isEmpty {
+                    emptyStateCard
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 12)
+                } else {
+                    VStack(spacing: 14) {
+                        StatusCard(
+                            status: engine.aggregateStatus,
+                            lastSent: engine.aggregateLastSentDate,
+                            nextSend: engine.nextSendDate,
+                            isTracking: engine.isTracking
+                        )
 
-                    MapPreview(location: engine.location.lastLocation)
+                        MapPreview(location: engine.location.lastLocation)
 
-                    sendNowButton
+                        sendAllButton
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 12)
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 12)
             }
         }
         .onReceive(tick) { now in nowTick = now }
-        .alert("Set an endpoint first", isPresented: Binding(
+        .alert("Add an endpoint first", isPresented: Binding(
             get: { needsEndpointAlert },
             set: { _ in pendingStartTap = false }
         )) {
@@ -60,12 +68,12 @@ struct HomeView: View {
                 pendingStartTap = false
             }
         } message: {
-            Text("Tell Azimuth which URL to send your location to before starting tracking.")
+            Text("Add at least one endpoint with a valid URL before starting tracking.")
         }
     }
 
     private var needsEndpointAlert: Bool {
-        pendingStartTap && !engine.settings.hasValidEndpoint
+        pendingStartTap && !engine.settings.hasAnyActiveValidEndpoint
     }
 
     private var header: some View {
@@ -86,34 +94,81 @@ struct HomeView: View {
     }
 
     private var subhead: String {
-        if !engine.settings.hasValidEndpoint {
-            return "Set an endpoint to begin"
+        let endpoints = engine.settings.endpoints
+        if endpoints.isEmpty {
+            return "Add an endpoint to begin"
         }
-        if engine.isTracking {
-            return "Sending \(engine.settings.schedule.summary)"
+        let active = endpoints.filter { $0.isActive && $0.hasValidURL }.count
+        if !engine.isTracking {
+            return "Ready when you are"
         }
-        return "Ready when you are"
+        if active == 0 {
+            return "All endpoints paused"
+        }
+        return "Sending to \(active) endpoint\(active == 1 ? "" : "s")"
     }
 
-    private var sendNowButton: some View {
+    private var sendAllButton: some View {
         Button {
             let haptic = UIImpactFeedbackGenerator(style: .soft)
             haptic.impactOccurred()
-            engine.sendNow()
+            engine.sendAllDueNow(force: true)
         } label: {
-            Label("Send now", systemImage: "paperplane.fill")
-                .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .foregroundStyle(.white)
-                .background(
-                    Capsule().fill(Theme.pulseGradient)
-                )
-                .shadow(color: Theme.sky.opacity(0.35), radius: 10, x: 0, y: 6)
+            HStack(spacing: 8) {
+                Image(systemName: "location.fill")
+                    .symbolEffect(.pulse, options: .repeating, isActive: engine.isAnySending)
+                Text(engine.isAnySending ? "Sending…" : "Send all now")
+                    .contentTransition(.opacity)
+            }
+            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .foregroundStyle(.white)
+            .background(
+                Capsule().fill(Theme.pulseGradient)
+            )
+            .shadow(color: Theme.sky.opacity(0.35), radius: 10, x: 0, y: 6)
+            .animation(.smooth(duration: 0.35), value: engine.isAnySending)
         }
         .buttonStyle(.plain)
-        .disabled(!engine.settings.hasValidEndpoint || engine.status.isSending)
-        .opacity(engine.settings.hasValidEndpoint ? 1.0 : 0.5)
+        .disabled(!engine.settings.hasAnyActiveValidEndpoint || engine.isAnySending)
+        .opacity(engine.settings.hasAnyActiveValidEndpoint ? 1.0 : 0.5)
+    }
+
+    private var emptyStateCard: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "location.fill")
+                .font(.system(size: 38, weight: .light))
+                .foregroundStyle(Theme.sky)
+            Text("No endpoints yet")
+                .font(.system(.title3, design: .rounded).weight(.semibold))
+            Text("Add a destination so Azimuth knows where to post your location.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                router.selection = .settings
+            } label: {
+                Text("Add endpoint")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(Capsule().fill(Theme.pulseGradient))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Theme.cardFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(Theme.cardStroke, lineWidth: 0.7)
+                )
+        )
     }
 
     private func handleMainTap() {
@@ -121,7 +176,7 @@ struct HomeView: View {
             engine.stopTracking()
             return
         }
-        guard engine.settings.hasValidEndpoint else {
+        guard engine.settings.hasAnyActiveValidEndpoint else {
             pendingStartTap = true
             return
         }

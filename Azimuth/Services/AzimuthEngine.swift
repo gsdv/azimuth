@@ -15,11 +15,11 @@ final class AzimuthEngine {
     private let endpoint: EndpointService
     private let pending: PendingQueue
 
-    private(set) var status: SendStatus = .idle
-    private(set) var pendingCount: Int = 0
+    private(set) var statuses: [UUID: SendStatus] = [:]
+    private(set) var pendingCounts: [UUID: Int] = [:]
 
     private var foregroundTimer: Timer?
-    private var sendTask: Task<Void, Never>?
+    private var inflightSends: Set<UUID> = []
     private var flushTask: Task<Void, Never>?
 
     init(settings: AppSettings? = nil,
@@ -44,17 +44,47 @@ final class AzimuthEngine {
         }
 
         Task { [weak self] in
-            guard let self else { return }
-            self.pendingCount = await self.pending.count()
+            await self?.refreshAllPendingCounts()
         }
     }
 
     var isTracking: Bool { settings.trackingEnabled }
 
+    var isAnySending: Bool {
+        statuses.values.contains { $0.isSending }
+    }
+
     var nextSendDate: Date? {
         guard settings.trackingEnabled else { return nil }
-        let reference = settings.lastSentDate ?? Date()
-        return settings.schedule.nextDate(after: reference)
+        return settings.earliestNextSendDate
+    }
+
+    var aggregateLastSentDate: Date? {
+        settings.endpoints.compactMap { $0.lastSentDate }.max()
+    }
+
+    var aggregateStatus: SendStatus {
+        if statuses.values.contains(where: { $0.isSending }) { return .sending }
+        let dated: [(Date, SendStatus)] = statuses.values.compactMap { value in
+            switch value {
+            case .success(let d):       return (d, value)
+            case .failure(_, let d):    return (d, value)
+            case .sending, .idle:       return nil
+            }
+        }
+        return dated.max(by: { $0.0 < $1.0 })?.1 ?? .idle
+    }
+
+    func status(for endpointID: UUID) -> SendStatus {
+        statuses[endpointID] ?? .idle
+    }
+
+    func pendingCount(for endpointID: UUID) -> Int {
+        pendingCounts[endpointID] ?? 0
+    }
+
+    var totalPendingCount: Int {
+        pendingCounts.values.reduce(0, +)
     }
 
     func toggleTracking() {
@@ -81,25 +111,59 @@ final class AzimuthEngine {
         location.stopUpdates()
         foregroundTimer?.invalidate()
         foregroundTimer = nil
-        sendTask?.cancel()
-        sendTask = nil
+        for id in inflightSends {
+            if statuses[id]?.isSending == true {
+                statuses[id] = .idle
+            }
+        }
+        inflightSends.removeAll()
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.refreshTaskID)
-        if status.isSending { status = .idle }
     }
 
-    func sendNow() {
-        guard sendTask == nil else { return }
+    func sendNow(endpointID: UUID) {
+        guard let endpoint = settings.endpoint(id: endpointID) else { return }
+        guard !inflightSends.contains(endpointID) else { return }
         location.requestOneShot()
-        sendTask = Task { [weak self] in
+        inflightSends.insert(endpointID)
+        statuses[endpointID] = .sending
+        Task { [weak self] in
             guard let self else { return }
-            if let loc = await waitForRecentLocation(timeout: 8) {
-                await self.performSend(location: loc, recordEvenWhenManual: true)
+            if let loc = await self.waitForRecentLocation(timeout: 8) {
+                await self.performSend(endpoint: endpoint, location: loc)
             } else if let cached = self.location.lastLocation {
-                await self.performSend(location: cached, recordEvenWhenManual: true)
+                await self.performSend(endpoint: endpoint, location: cached)
             } else {
-                self.status = .failure(message: "Couldn't get a location fix.", at: Date())
+                self.statuses[endpointID] = .failure(message: "Couldn't get a location fix.", at: Date())
             }
-            self.sendTask = nil
+            self.inflightSends.remove(endpointID)
+        }
+    }
+
+    func sendAllDueNow(force: Bool = false) {
+        let now = Date()
+        let targets: [Endpoint]
+        if force {
+            targets = settings.endpoints.filter { $0.isActive && $0.hasValidURL }
+        } else {
+            targets = settings.endpoints.filter { $0.shouldSend(now: now) }
+        }
+        guard !targets.isEmpty else { return }
+        location.requestOneShot()
+        for ep in targets {
+            guard !inflightSends.contains(ep.id) else { continue }
+            inflightSends.insert(ep.id)
+            statuses[ep.id] = .sending
+            Task { [weak self] in
+                guard let self else { return }
+                if let loc = await self.waitForRecentLocation(timeout: 8) {
+                    await self.performSend(endpoint: ep, location: loc)
+                } else if let cached = self.location.lastLocation {
+                    await self.performSend(endpoint: ep, location: cached)
+                } else {
+                    self.statuses[ep.id] = .failure(message: "Couldn't get a location fix.", at: Date())
+                }
+                self.inflightSends.remove(ep.id)
+            }
         }
     }
 
@@ -117,12 +181,16 @@ final class AzimuthEngine {
 
     private func handleLocationUpdate() {
         guard settings.trackingEnabled else { return }
-        guard shouldSend() else { return }
-        guard sendTask == nil else { return }
         guard let loc = location.lastLocation else { return }
-        sendTask = Task { [weak self] in
-            await self?.performSend(location: loc, recordEvenWhenManual: false)
-            self?.sendTask = nil
+        let now = Date()
+        let due = settings.endpoints.filter { $0.shouldSend(now: now) }
+        for ep in due {
+            guard !inflightSends.contains(ep.id) else { continue }
+            inflightSends.insert(ep.id)
+            Task { [weak self] in
+                await self?.performSend(endpoint: ep, location: loc)
+                self?.inflightSends.remove(ep.id)
+            }
         }
     }
 
@@ -139,34 +207,46 @@ final class AzimuthEngine {
         foregroundTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.settings.trackingEnabled, self.shouldSend() else { return }
-                self.location.requestOneShot()
+                guard self.settings.trackingEnabled else { return }
+                let now = Date()
+                let anyDue = self.settings.endpoints.contains { $0.shouldSend(now: now) }
+                if anyDue { self.location.requestOneShot() }
             }
         }
     }
 
-    private func shouldSend() -> Bool {
-        guard let last = settings.lastSentDate else { return true }
-        return Date() >= settings.schedule.nextDate(after: last)
+    private static let maxBodyPreviewBytes = 16 * 1024
+
+    private static func bodyPreview(from data: Data) -> (json: String, truncated: Bool) {
+        if data.count > maxBodyPreviewBytes {
+            let raw = String(data: data.prefix(maxBodyPreviewBytes), encoding: .utf8) ?? ""
+            return (raw, true)
+        }
+        if let obj = try? JSONSerialization.jsonObject(with: data),
+           let pretty = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
+           let str = String(data: pretty, encoding: .utf8) {
+            return (str, false)
+        }
+        return (String(data: data, encoding: .utf8) ?? "", false)
     }
 
-    private func performSend(location loc: CLLocation, recordEvenWhenManual: Bool) async {
-        guard settings.hasValidEndpoint else {
-            status = .failure(message: "Set an endpoint in Settings first.", at: Date())
+    private func performSend(endpoint ep: Endpoint, location loc: CLLocation) async {
+        guard ep.hasValidURL else {
+            statuses[ep.id] = .failure(message: "Endpoint URL is invalid.", at: Date())
             return
         }
 
-        status = .sending
-        let battery = settings.includeBattery ? readBattery() : (nil, nil)
+        statuses[ep.id] = .sending
+        let battery = ep.includeBattery ? readBattery() : (nil, nil)
         let payload = EndpointPayload(
             location: loc,
             deviceId: settings.deviceId,
-            includeSpeed: settings.includeSpeed,
+            includeSpeed: ep.includeSpeed,
             batteryLevel: battery.0,
             batteryState: battery.1
         )
-        let url = settings.endpointURL
-        let token = settings.bearerToken
+        let url = ep.url
+        let token = settings.bearerToken(for: ep.id)
         let bearer: String? = token.isEmpty ? nil : token
 
         let body: Data
@@ -175,11 +255,18 @@ final class AzimuthEngine {
         } catch {
             let now = Date()
             let message = "Couldn't encode payload."
-            status = .failure(message: message, at: now)
-            settings.recordSend(SendRecord(date: now, success: false, statusCode: nil, message: error.localizedDescription))
-            NotificationService.shared.scheduleSendFailure(message: message)
+            statuses[ep.id] = .failure(message: message, at: now)
+            settings.recordSend(SendRecord(
+                date: now, success: false, statusCode: nil,
+                message: error.localizedDescription,
+                endpointID: ep.id, endpointName: ep.displayName,
+                bodyJSON: nil, bodyTruncated: false
+            ))
+            NotificationService.shared.scheduleSendFailure(message: "\(ep.displayName): \(message)")
             return
         }
+
+        let preview = AzimuthEngine.bodyPreview(from: body)
 
         let bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "AzimuthSend")
         defer {
@@ -191,41 +278,51 @@ final class AzimuthEngine {
         do {
             let result = try await endpoint.send(body: body, to: url, bearerToken: bearer)
             let now = Date()
-            status = .success(at: now)
-            settings.recordSend(SendRecord(date: now, success: true, statusCode: result.statusCode, message: nil))
-            flushPending()
+            statuses[ep.id] = .success(at: now)
+            settings.recordSend(SendRecord(
+                date: now, success: true, statusCode: result.statusCode,
+                message: nil,
+                endpointID: ep.id, endpointName: ep.displayName,
+                bodyJSON: preview.json, bodyTruncated: preview.truncated
+            ))
+            flushPending(for: ep.id)
             scheduleNextRefresh()
         } catch let error as EndpointError {
             let now = Date()
             let message = error.errorDescription ?? "Send failed."
-            status = .failure(message: message, at: now)
+            statuses[ep.id] = .failure(message: message, at: now)
             let code: Int? = {
                 if case .httpStatus(let c) = error { return c }
                 return nil
             }()
             if case .networkFailure = error {
-                await pending.enqueue(body: body, capturedAt: loc.timestamp)
-                pendingCount = await pending.count()
+                await pending.enqueue(endpointID: ep.id, body: body, capturedAt: loc.timestamp)
+                pendingCounts[ep.id] = await pending.count(forEndpoint: ep.id)
             }
-            settings.recordSend(SendRecord(date: now, success: false, statusCode: code, message: message))
-            NotificationService.shared.scheduleSendFailure(message: message)
+            settings.recordSend(SendRecord(
+                date: now, success: false, statusCode: code, message: message,
+                endpointID: ep.id, endpointName: ep.displayName,
+                bodyJSON: preview.json, bodyTruncated: preview.truncated
+            ))
+            NotificationService.shared.scheduleSendFailure(message: "\(ep.displayName): \(message)")
         } catch {
             let now = Date()
             let message = error.localizedDescription
-            status = .failure(message: message, at: now)
-            await pending.enqueue(body: body, capturedAt: loc.timestamp)
-            pendingCount = await pending.count()
-            settings.recordSend(SendRecord(date: now, success: false, statusCode: nil, message: message))
-            NotificationService.shared.scheduleSendFailure(message: message)
+            statuses[ep.id] = .failure(message: message, at: now)
+            await pending.enqueue(endpointID: ep.id, body: body, capturedAt: loc.timestamp)
+            pendingCounts[ep.id] = await pending.count(forEndpoint: ep.id)
+            settings.recordSend(SendRecord(
+                date: now, success: false, statusCode: nil, message: message,
+                endpointID: ep.id, endpointName: ep.displayName,
+                bodyJSON: preview.json, bodyTruncated: preview.truncated
+            ))
+            NotificationService.shared.scheduleSendFailure(message: "\(ep.displayName): \(message)")
         }
     }
 
-    func flushPending() {
+    func flushPending(for endpointID: UUID? = nil) {
         guard flushTask == nil else { return }
-        guard settings.hasValidEndpoint else { return }
-        let url = settings.endpointURL
-        let token = settings.bearerToken
-        let bearer: String? = token.isEmpty ? nil : token
+        let endpointSnapshot = settings.endpoints
 
         flushTask = Task { [weak self] in
             guard let self else { return }
@@ -236,30 +333,56 @@ final class AzimuthEngine {
                 }
             }
 
-            let items = await self.pending.snapshot()
+            let allItems = await self.pending.snapshot()
+            let items: [PendingQueue.Item]
+            if let endpointID {
+                items = allItems.filter { $0.endpointID == endpointID }
+            } else {
+                items = allItems
+            }
+
             for item in items {
+                guard let ep = endpointSnapshot.first(where: { $0.id == item.endpointID }),
+                      ep.hasValidURL else {
+                    await self.pending.remove(id: item.id)
+                    continue
+                }
+                let token = self.settings.bearerToken(for: ep.id)
+                let bearer: String? = token.isEmpty ? nil : token
                 do {
-                    _ = try await self.endpoint.send(body: item.body, to: url, bearerToken: bearer)
+                    _ = try await self.endpoint.send(body: item.body, to: ep.url, bearerToken: bearer)
                     await self.pending.remove(id: item.id)
                 } catch {
                     break
                 }
             }
-            self.pendingCount = await self.pending.count()
+            await self.refreshAllPendingCounts()
             self.flushTask = nil
         }
     }
 
+    private func refreshAllPendingCounts() async {
+        var fresh: [UUID: Int] = [:]
+        let snap = await pending.snapshot()
+        for item in snap {
+            fresh[item.endpointID, default: 0] += 1
+        }
+        self.pendingCounts = fresh
+    }
+
     func didEnterForeground() {
         flushPending()
-        guard settings.trackingEnabled, shouldSend(), sendTask == nil else { return }
-        location.requestOneShot()
+        guard settings.trackingEnabled else { return }
+        let now = Date()
+        let anyDue = settings.endpoints.contains { $0.shouldSend(now: now) }
+        if anyDue { location.requestOneShot() }
     }
 
     func scheduleNextRefresh() {
         guard settings.trackingEnabled else { return }
+        guard settings.hasAnyActiveValidEndpoint else { return }
         let request = BGAppRefreshTaskRequest(identifier: Self.refreshTaskID)
-        let target = nextSendDate ?? Date().addingTimeInterval(60 * 60)
+        let target = settings.earliestNextSendDate ?? Date().addingTimeInterval(60 * 60)
         request.earliestBeginDate = max(target, Date().addingTimeInterval(15 * 60))
         do {
             try BGTaskScheduler.shared.submit(request)
@@ -276,13 +399,16 @@ final class AzimuthEngine {
             guard let self else { return }
             self.scheduleNextRefresh()
             guard self.settings.trackingEnabled,
-                  self.settings.hasValidEndpoint,
-                  self.shouldSend() else { return }
+                  self.settings.hasAnyActiveValidEndpoint else { return }
+            let now = Date()
+            let anyDue = self.settings.endpoints.contains { $0.shouldSend(now: now) }
+            guard anyDue else { return }
             self.location.requestOneShot()
             let start = Date()
             while Date().timeIntervalSince(start) < 20 {
                 if Task.isCancelled { return }
-                if !self.shouldSend() { return }
+                let stillDue = self.settings.endpoints.contains { $0.shouldSend(now: Date()) }
+                if !stillDue { return }
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }

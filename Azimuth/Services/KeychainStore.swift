@@ -5,17 +5,26 @@ final class KeychainStore: @unchecked Sendable {
     static let shared = KeychainStore()
 
     private let service = "me.gsdv.azimuth"
-    private let bearerKey = "bearer_token"
 
-    var bearerToken: String? {
-        get { read(bearerKey) }
-        set {
-            if let newValue, !newValue.isEmpty {
-                write(bearerKey, value: newValue)
-            } else {
-                delete(bearerKey)
-            }
+    func bearerToken(for endpointID: UUID) -> String? {
+        read(account(for: endpointID))
+    }
+
+    func setBearerToken(_ token: String?, for endpointID: UUID) {
+        let key = account(for: endpointID)
+        if let token, !token.isEmpty {
+            write(key, value: token)
+        } else {
+            delete(key)
         }
+    }
+
+    func deleteBearerToken(for endpointID: UUID) {
+        delete(account(for: endpointID))
+    }
+
+    private func account(for endpointID: UUID) -> String {
+        "bearer_\(endpointID.uuidString)"
     }
 
     private func write(_ account: String, value: String) {
