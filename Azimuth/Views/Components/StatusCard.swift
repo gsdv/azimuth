@@ -27,10 +27,12 @@ struct StatusCard: View {
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 16) {
-                infoColumn(icon: "clock", title: "Last sent", value: lastSentText)
-                Divider().frame(height: 28).opacity(0.5)
-                infoColumn(icon: "calendar.badge.clock", title: "Next", value: nextSendText)
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                HStack(spacing: 16) {
+                    infoColumn(icon: "clock", title: "Last sent", value: lastSentText(now: context.date))
+                    Divider().frame(height: 28).opacity(0.5)
+                    infoColumn(icon: "calendar.badge.clock", title: "Next", value: nextSendText(now: context.date))
+                }
             }
         }
         .padding(20)
@@ -63,20 +65,22 @@ struct StatusCard: View {
         }
     }
 
-    private var lastSentText: String {
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    private func lastSentText(now: Date) -> String {
         guard let lastSent else { return "Never" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: lastSent, relativeTo: Date())
+        return Self.relativeFormatter.localizedString(for: lastSent, relativeTo: now)
     }
 
-    private var nextSendText: String {
+    private func nextSendText(now: Date) -> String {
         guard isTracking, let nextSend else { return "—" }
-        let interval = nextSend.timeIntervalSinceNow
+        let interval = nextSend.timeIntervalSince(now)
         if interval <= 0 { return "Soon" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: nextSend, relativeTo: Date())
+        return Self.relativeFormatter.localizedString(for: nextSend, relativeTo: now)
     }
 
     private func infoColumn(icon: String, title: String, value: String) -> some View {
