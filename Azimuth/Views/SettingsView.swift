@@ -19,6 +19,7 @@ struct SettingsView: View {
                         permissionsSection
                         backgroundSection
                         deviceSection(settings: settings)
+                        versionFooter
                     }
                     .padding(20)
                 }
@@ -254,6 +255,17 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var versionFooter: some View {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return Text("v\(version) (\(build))")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
     }
 
     private var authColor: Color {
