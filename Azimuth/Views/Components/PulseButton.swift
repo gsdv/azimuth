@@ -117,7 +117,7 @@ struct PulseButton: View {
     }
 
     private var iconName: String {
-        isActive ? "location.fill" : "location.slash.fill"
+        (isActive || isSending) ? "location.fill" : "location.slash.fill"
     }
 
     private var buttonLabel: String {
