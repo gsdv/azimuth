@@ -43,6 +43,7 @@ struct AzimuthApp: App {
                         router.selection = pending
                         NotificationService.shared.pendingNavigation = nil
                     }
+                    engine.location.startForegroundUpdates()
                     if engine.isTracking {
                         engine.scheduleNextRefresh()
                     }
@@ -50,8 +51,10 @@ struct AzimuthApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
                         GlobalKeyboardDismisser.shared.install()
+                        engine.location.startForegroundUpdates()
                         engine.didEnterForeground()
                     } else if phase == .background {
+                        engine.location.stopForegroundUpdates()
                         if engine.isTracking {
                             engine.scheduleNextRefresh()
                         }

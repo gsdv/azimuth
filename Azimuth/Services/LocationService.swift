@@ -19,6 +19,9 @@ final class LocationService: NSObject {
     private(set) var lastLocation: CLLocation?
     private(set) var isUpdating: Bool = false
 
+    private var wantsForegroundUpdates = false
+    private var wantsTrackingUpdates = false
+
     var onLocation: ((CLLocation) -> Void)?
     var onAuthorizationChange: ((Authorization) -> Void)?
 
@@ -47,23 +50,55 @@ final class LocationService: NSObject {
     }
 
     func startUpdates() {
-        guard authorization == .whenInUse || authorization == .always else { return }
-        manager.startUpdatingLocation()
-        manager.startMonitoringSignificantLocationChanges()
-        manager.startMonitoringVisits()
-        isUpdating = true
+        wantsTrackingUpdates = true
+        syncManagerState()
     }
 
     func stopUpdates() {
-        manager.stopUpdatingLocation()
-        manager.stopMonitoringSignificantLocationChanges()
-        manager.stopMonitoringVisits()
-        isUpdating = false
+        wantsTrackingUpdates = false
+        syncManagerState()
+    }
+
+    func startForegroundUpdates() {
+        wantsForegroundUpdates = true
+        syncManagerState()
+    }
+
+    func stopForegroundUpdates() {
+        wantsForegroundUpdates = false
+        syncManagerState()
     }
 
     func requestOneShot() {
         guard authorization == .whenInUse || authorization == .always else { return }
         manager.requestLocation()
+    }
+
+    private func syncManagerState() {
+        let authorized = authorization == .whenInUse || authorization == .always
+        guard authorized else {
+            if isUpdating {
+                manager.stopUpdatingLocation()
+                manager.stopMonitoringSignificantLocationChanges()
+                manager.stopMonitoringVisits()
+                isUpdating = false
+            }
+            return
+        }
+        let wantsContinuous = wantsForegroundUpdates || wantsTrackingUpdates
+        if wantsContinuous {
+            manager.startUpdatingLocation()
+        } else {
+            manager.stopUpdatingLocation()
+        }
+        if wantsTrackingUpdates {
+            manager.startMonitoringSignificantLocationChanges()
+            manager.startMonitoringVisits()
+        } else {
+            manager.stopMonitoringSignificantLocationChanges()
+            manager.stopMonitoringVisits()
+        }
+        isUpdating = wantsContinuous
     }
 
     private func syncAuthorization(_ status: CLAuthorizationStatus) {
@@ -84,6 +119,7 @@ extension LocationService: CLLocationManagerDelegate {
         Task { @MainActor in
             let previous = self.authorization
             self.syncAuthorization(status)
+            self.syncManagerState()
             if self.authorization != previous {
                 self.onAuthorizationChange?(self.authorization)
             }
