@@ -38,4 +38,29 @@ final class GlobalKeyboardDismisser: NSObject, UIGestureRecognizerDelegate {
     ) -> Bool {
         true
     }
+
+    nonisolated func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldReceive touch: UITouch
+    ) -> Bool {
+        MainActor.assumeIsolated {
+            guard let window = touch.window else { return true }
+            let location = touch.location(in: window)
+            return !Self.touchHitsTextInput(at: location, in: window)
+        }
+    }
+
+    // Returns true if the touch lands on (or within ~16pt of) any UITextField/UITextView
+    // in the window. Tapping the focused field — or its visual padding — should not
+    // dismiss the keyboard, so the user can reposition the cursor, paste, or select.
+    private static func touchHitsTextInput(at location: CGPoint, in root: UIView) -> Bool {
+        if root is UITextField || root is UITextView {
+            let frame = root.convert(root.bounds, to: nil).insetBy(dx: -16, dy: -16)
+            if frame.contains(location) { return true }
+        }
+        for sub in root.subviews where !sub.isHidden && sub.alpha > 0 {
+            if touchHitsTextInput(at: location, in: sub) { return true }
+        }
+        return false
+    }
 }

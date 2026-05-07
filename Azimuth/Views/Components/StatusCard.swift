@@ -73,6 +73,8 @@ struct StatusCard: View {
 
     private func lastSentText(now: Date) -> String {
         guard let lastSent else { return "Never" }
+        let interval = now.timeIntervalSince(lastSent)
+        if interval < 60 { return "Just now" }
         return Self.relativeFormatter.localizedString(for: lastSent, relativeTo: now)
     }
 

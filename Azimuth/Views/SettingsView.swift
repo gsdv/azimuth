@@ -323,7 +323,10 @@ private struct EndpointEditor: View {
     @State private var tokenDraft: String
     @State private var revealToken: Bool = false
     @State private var confirmDelete: Bool = false
+    @State private var isURLErrorVisible: Bool = false
+    @FocusState private var isNameFocused: Bool
     @FocusState private var isURLFocused: Bool
+    @FocusState private var isTokenFocused: Bool
 
     init(initial: Endpoint, isNew: Bool, onSave: @escaping (Endpoint, String) -> Void, onDelete: (() -> Void)?) {
         self.isNew = isNew
@@ -370,20 +373,32 @@ private struct EndpointEditor: View {
         guard let parsed = URL(string: normalizedURL(from: urlDraft)),
               let scheme = parsed.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
-              parsed.host?.isEmpty == false else { return false }
-        return true
+              let host = parsed.host, !host.isEmpty else { return false }
+
+        // Explicit http://… is the escape hatch for local/intranet URLs.
+        // Without it, require a public-style host (a 2+ char alphabetic TLD).
+        if hasExplicitScheme(urlDraft) { return true }
+        guard let dot = host.lastIndex(of: ".") else { return false }
+        let tld = host[host.index(after: dot)...]
+        return tld.count >= 2 && tld.allSatisfy { $0.isLetter }
+    }
+
+    private func hasExplicitScheme(_ raw: String) -> Bool {
+        let lower = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower.hasPrefix("http://") || lower.hasPrefix("https://")
     }
 
     private func save() {
         var updated = draft
-        updated.name = nameDraft.trimmingCharacters(in: .whitespaces)
+        updated.name = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.url = normalizedURL(from: urlDraft)
-        onSave(updated, tokenDraft)
+        let trimmedToken = tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        onSave(updated, trimmedToken)
         dismiss()
     }
 
     private func normalizedURL(from raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return trimmed }
         let lower = trimmed.lowercased()
         if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
@@ -400,8 +415,11 @@ private struct EndpointEditor: View {
                     .foregroundStyle(.secondary)
                 TextField("Personal", text: $nameDraft)
                     .textInputAutocapitalization(.words)
+                    .focused($isNameFocused)
                     .padding(12)
                     .background(inputFieldBackground)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(TapGesture().onEnded { isNameFocused = true })
 
                 Divider().opacity(0.4)
 
@@ -422,13 +440,48 @@ private struct EndpointEditor: View {
                 }
                 .padding(12)
                 .background(inputFieldBackground)
-
-                if !urlDraft.isEmpty && !canSave && !isURLFocused {
-                    Label("That URL doesn't look right.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(Theme.danger)
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded { isURLFocused = true })
+                .background(alignment: .topTrailing) {
+                    if isURLErrorVisible {
+                        urlErrorTab
+                            .padding(.trailing, 12)
+                            .offset(y: -22)
+                            .transition(.move(edge: .bottom))
+                    }
                 }
+                .onChange(of: isURLFocused) { _, _ in syncURLErrorVisibility() }
+                .onChange(of: urlDraft) { _, _ in syncURLErrorVisibility() }
             }
+        }
+    }
+
+    private var urlErrorTab: some View {
+        Text("That URL doesn't look right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 8,
+                    bottomLeadingRadius: 0,
+                    bottomTrailingRadius: 0,
+                    topTrailingRadius: 8
+                )
+                .fill(Theme.danger)
+            )
+    }
+
+    private var showURLError: Bool {
+        !urlDraft.isEmpty && !canSave && !isURLFocused
+    }
+
+    private func syncURLErrorVisibility() {
+        let target = showURLError
+        guard target != isURLErrorVisible else { return }
+        withAnimation(.smooth(duration: 0.3)) {
+            isURLErrorVisible = target
         }
     }
 
@@ -447,24 +500,32 @@ private struct EndpointEditor: View {
                         Group {
                             if revealToken {
                                 TextField("", text: $tokenDraft)
+                                    .focused($isTokenFocused)
                             } else {
                                 SecureField("", text: $tokenDraft)
+                                    .focused($isTokenFocused)
                             }
                         }
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .foregroundStyle(.primary)
                     }
+                    .frame(minHeight: 22)
                     Button {
                         revealToken.toggle()
                     } label: {
                         Image(systemName: revealToken ? "eye.slash" : "eye")
                             .foregroundStyle(.secondary)
+                            .contentTransition(.symbolEffect(.replace))
+                            .frame(width: 22, height: 22)
                     }
                     .buttonStyle(.plain)
+                    .animation(.smooth(duration: 0.3), value: revealToken)
                 }
                 .padding(12)
                 .background(inputFieldBackground)
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded { isTokenFocused = true })
 
                 Text("Sent as `Authorization: Bearer …`. Stored in the iOS Keychain.")
                     .font(.caption2)
