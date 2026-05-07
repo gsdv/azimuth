@@ -323,6 +323,7 @@ private struct EndpointEditor: View {
     @State private var tokenDraft: String
     @State private var revealToken: Bool = false
     @State private var confirmDelete: Bool = false
+    @FocusState private var isURLFocused: Bool
 
     init(initial: Endpoint, isNew: Bool, onSave: @escaping (Endpoint, String) -> Void, onDelete: (() -> Void)?) {
         self.isNew = isNew
@@ -366,7 +367,7 @@ private struct EndpointEditor: View {
     }
 
     private var canSave: Bool {
-        guard let parsed = URL(string: urlDraft.trimmingCharacters(in: .whitespaces)),
+        guard let parsed = URL(string: normalizedURL(from: urlDraft)),
               let scheme = parsed.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               parsed.host?.isEmpty == false else { return false }
@@ -376,9 +377,19 @@ private struct EndpointEditor: View {
     private func save() {
         var updated = draft
         updated.name = nameDraft.trimmingCharacters(in: .whitespaces)
-        updated.url = urlDraft.trimmingCharacters(in: .whitespaces)
+        updated.url = normalizedURL(from: urlDraft)
         onSave(updated, tokenDraft)
         dismiss()
+    }
+
+    private func normalizedURL(from raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return trimmed }
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
+            return trimmed
+        }
+        return "https://" + trimmed
     }
 
     private var nameAndURLCard: some View {
@@ -407,11 +418,12 @@ private struct EndpointEditor: View {
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .foregroundStyle(.primary)
+                        .focused($isURLFocused)
                 }
                 .padding(12)
                 .background(inputFieldBackground)
 
-                if !urlDraft.isEmpty && !canSave {
+                if !urlDraft.isEmpty && !canSave && !isURLFocused {
                     Label("That URL doesn't look right.", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(Theme.danger)
