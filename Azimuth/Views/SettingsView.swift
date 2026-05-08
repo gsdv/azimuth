@@ -170,7 +170,7 @@ struct SettingsView: View {
                     Button {
                         engine.location.requestPermission()
                     } label: {
-                        Text("Request permission")
+                        Text("Continue")
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
                     }
